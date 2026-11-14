@@ -20,7 +20,7 @@ const store = await import('../store')
 const { pages } = await import('../pages')
 const App = (await import('../App.vue')).default
 
-const organization = { name: '测试企业', departments: [], profiles: [], policy: { directoryScope: 'ORGANIZATION', sharingEnabled: true, revision: 1 } }
+const organization = { name: '测试企业', departments: [], profiles: [], policy: { directoryScope: 'ORGANIZATION', sharingEnabled: true, revision: 1, bodyRetentionDays: 30 } }
 
 function signIn(role) {
   Object.keys(responses).forEach(k => delete responses[k])
@@ -82,6 +82,16 @@ describe('console shell', () => {
     store.navigate('members')
     await flushPromises()
     expect(wrapper.text()).toContain('成员 1 人')
+    wrapper.unmount()
+  })
+
+  it('shows the organization body retention on the settings page', async () => {
+    signIn('OWNER')
+    const wrapper = await mountApp()
+    store.navigate('settings')
+    await flushPromises()
+    expect(wrapper.text()).toContain('会话正文保留')
+    expect(wrapper.find('.policy-panel .arco-input-number input').element.value).toBe('30')
     wrapper.unmount()
   })
 

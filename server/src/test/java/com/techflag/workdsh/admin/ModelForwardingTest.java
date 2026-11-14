@@ -93,6 +93,9 @@ class ModelForwardingTest {
         var request = new MockHttpServletRequest();
         request.setRequestURI(path);
         var response = gateway.forward(request, "Bearer " + ACCESS_KEY, null, body.getBytes(StandardCharsets.UTF_8));
+        if (body.contains("\"stream\":true")) {
+            assertEquals("no", response.getHeaders().getFirst("X-Accel-Buffering"), "proxies must not buffer streamed answers");
+        }
         var out = new ByteArrayOutputStream();
         response.getBody().writeTo(out);
         return out.toString(StandardCharsets.UTF_8);

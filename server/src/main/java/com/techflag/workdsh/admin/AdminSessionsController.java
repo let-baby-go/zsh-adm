@@ -10,8 +10,8 @@ public class AdminSessionsController {
  public record Summary(String memberId,String memberName,String sessionId,long createdAt,long eventCount){}
  public record Message(long seq,long time,String role,JsonNode content){}
  public record Detail(List<Message> messages,long nextOffset,boolean hasMore){}
- private final JdbcTemplate db;private final AuthService auth;private final ObjectMapper json;private final AuditLog audit;
- public AdminSessionsController(JdbcTemplate db,AuthService auth,ObjectMapper json,AuditLog audit){this.db=db;this.auth=auth;this.json=json;this.audit=audit;}
+ private final JdbcTemplate db;private final AuthService auth;private final ObjectMapper json;private final AuditLog audit;private final BodyObjects objects;
+ public AdminSessionsController(JdbcTemplate db,AuthService auth,ObjectMapper json,AuditLog audit,BodyObjects objects){this.db=db;this.auth=auth;this.json=json;this.audit=audit;this.objects=objects;}
  private AuthService.Actor admin(String token){var a=auth.actor(token);auth.requireReady(a);auth.requireAdmin(a);return a;}
  private JsonNode decode(String value){try{return json.readTree(value);}catch(Exception e){throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"Malformed session storage");}}
  @GetMapping public List<Summary> list(@RequestHeader(value="Authorization",required=false) String token,@RequestParam(defaultValue="0") int offset,@RequestParam(defaultValue="50") int limit){
@@ -26,8 +26,8 @@ public class AdminSessionsController {
   {
    var row=db.query("select client_session_id,record_count from member_desktop_body_sessions where organization_id=? and member_id=? and server_session_id=? and deleted_at=0",(rs,n)->new Object[]{rs.getString(1),rs.getLong(2)},a.organizationId(),memberId,sessionId).stream().findFirst().orElseThrow(()->new ResponseStatusException(HttpStatus.NOT_FOUND));
    count=(long)row[1];
-   events=db.query("select record_seq,received_at,role,body_text from member_desktop_body_records where organization_id=? and member_id=? and client_session_id=? and record_seq>=? order by record_seq limit 200",(rs,n)->{
-    var event=json.createObjectNode();event.put("seq",rs.getLong(1));event.put("time",rs.getLong(2));boolean user="user".equals(rs.getString(3));event.put("type",user?"user/message":"assistant/message");var data=event.putObject("data");var content=user?data.putArray("content"):data.putObject("message").putArray("content");content.addObject().put("type","text").put("text",rs.getString(4));return (JsonNode)event;
+   events=db.query("select record_seq,received_at,role,body_text,storage_key from member_desktop_body_records where organization_id=? and member_id=? and client_session_id=? and record_seq>=? order by record_seq limit 200",(rs,n)->{
+    var event=json.createObjectNode();event.put("seq",rs.getLong(1));event.put("time",rs.getLong(2));boolean user="user".equals(rs.getString(3));event.put("type",user?"user/message":"assistant/message");var data=event.putObject("data");var content=user?data.putArray("content"):data.putObject("message").putArray("content");content.addObject().put("type","text").put("text",objects.text(rs.getString(4),rs.getString(5)));return (JsonNode)event;
    },a.organizationId(),memberId,row[0],offset);
   }
   var messages=events.stream().filter(e->List.of("user/message","assistant/message").contains(e.path("type").asText())).map(e->{var data=e.path("data");var user="user/message".equals(e.path("type").asText());return new Message(e.path("seq").asLong(),e.path("time").asLong(),user?"user":"assistant",user?data.path("content"):data.path("message").path("content"));}).toList();

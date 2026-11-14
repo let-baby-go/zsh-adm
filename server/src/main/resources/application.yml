@@ -25,6 +25,23 @@ workdsh:
     connect-timeout: ${WORKDSH_GATEWAY_CONNECT_TIMEOUT:15s}
     response-timeout: ${WORKDSH_GATEWAY_RESPONSE_TIMEOUT:5m}
     stream-idle-timeout: ${WORKDSH_GATEWAY_STREAM_IDLE_TIMEOUT:5m}
+  # Desktop visible text: "database" keeps it in member_desktop_body_records; "s3" stores one object per
+  # record in an S3-compatible bucket (AWS S3, MinIO, OSS, COS). migrate-existing moves inline text once.
+  body-store:
+    type: ${WORKDSH_BODY_STORE:database}
+    migrate-existing: ${WORKDSH_BODY_STORE_MIGRATE:false}
+    s3:
+      endpoint: ${WORKDSH_BODY_S3_ENDPOINT:}
+      region: ${WORKDSH_BODY_S3_REGION:us-east-1}
+      bucket: ${WORKDSH_BODY_S3_BUCKET:}
+      prefix: ${WORKDSH_BODY_S3_PREFIX:}
+      access-key: ${WORKDSH_BODY_S3_ACCESS_KEY:}
+      secret-key: ${WORKDSH_BODY_S3_SECRET_KEY:}
+      path-style: ${WORKDSH_BODY_S3_PATH_STYLE:false}
+  # Daily housekeeping: expired logins, organization body retention, capacity log.
+  maintenance:
+    cron: ${WORKDSH_MAINTENANCE_CRON:0 30 3 * * *}
+    zone: ${WORKDSH_MAINTENANCE_ZONE:Asia/Shanghai}
   web:
     origin: ${WORKDSH_ADMIN_WEB_ORIGIN:http://127.0.0.1:18891}
   bootstrap:

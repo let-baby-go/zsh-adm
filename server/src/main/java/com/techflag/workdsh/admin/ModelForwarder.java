@@ -80,7 +80,9 @@ public class ModelForwarder {
             throw failed(call, rejected(call, reply.statusCode(), error, reply.headers().firstValue("Retry-After").orElse(null)));
         }
         String contentType = reply.headers().firstValue("Content-Type").orElse(call.streaming() ? "text/event-stream" : "application/json");
-        return ResponseEntity.ok().header("Cache-Control", "no-store").header("Content-Type", contentType).body(relay(call, reply.body()));
+        // X-Accel-Buffering: nginx (and compatible proxies) relay each chunk immediately even without proxy_buffering off.
+        return ResponseEntity.ok().header("Cache-Control", "no-store").header("X-Accel-Buffering", "no")
+                .header("Content-Type", contentType).body(relay(call, reply.body()));
     }
 
     private ResponseEntity<StreamingResponseBody> anthropicViaSpringAi(Call call) {

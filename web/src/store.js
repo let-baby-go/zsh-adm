@@ -3,7 +3,7 @@ import { computed, reactive, ref } from 'vue'
 import { Message } from '@arco-design/web-vue'
 import { api, post } from './api'
 
-const emptyPolicy = () => ({ directoryScope: 'ORGANIZATION', sharingEnabled: true, revision: 0 })
+const emptyPolicy = () => ({ directoryScope: 'ORGANIZATION', sharingEnabled: true, revision: 0, bodyRetentionDays: 0 })
 
 export const me = ref(null)
 export const page = ref('members')

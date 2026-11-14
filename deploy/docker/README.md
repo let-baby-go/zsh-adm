@@ -23,7 +23,7 @@ PostgreSQL 验收栈（叠加 override）：
 docker compose -f docker-compose.yml -f docker-compose.postgres.yml up --build -d
 ```
 
-首次初始化由 `deploy/postgres/docker/init-schema.sh` 完成：创建最小权限角色 `workdsh_app`、按 `deploy/postgres/migrations` 应用 V001–V007 并写入 `workdsh_schema_history`（含 SHA256 校验）、执行 `runtime-grants.sql`。应用使用 `workdsh_app` 连接，不使用维护账号，且不自动 DDL。初始化只发生在 `workdsh-pgdata` 卷为空时；使用同样的 `-f` 参数执行 `docker compose -f docker-compose.yml -f docker-compose.postgres.yml down -v` 会删除全部数据并允许重新初始化。
+首次初始化由 `deploy/postgres/docker/init-schema.sh` 完成：创建最小权限角色 `workdsh_app`、按 `deploy/postgres/migrations` 应用全部迁移（当前为 V001–V003、V006–V009）并写入 `workdsh_schema_history`（含 SHA256 校验）、执行 `runtime-grants.sql`。应用使用 `workdsh_app` 连接，不使用维护账号，且不自动 DDL。初始化只发生在 `workdsh-pgdata` 卷为空时；使用同样的 `-f` 参数执行 `docker compose -f docker-compose.yml -f docker-compose.postgres.yml down -v` 会删除全部数据并允许重新初始化。
 
 ## 部署注意
 
@@ -31,4 +31,56 @@ docker compose -f docker-compose.yml -f docker-compose.postgres.yml up --build -
 - compose 默认仅绑定 `127.0.0.1`，且不终止 TLS，不能直接作为公网入口。对外暴露需自行配置反向代理、证书与访问控制；Desktop 成员 Bearer API 必须走受信任的 HTTPS 入口。
 - 凭据只放在 `.env` 或服务器 secret 中，不下发浏览器、不写入镜像。`.env` 已在 `.gitignore` 内。
 - `WORKDSH_ADMIN_WEB_ORIGIN` 必须与浏览器实际访问地址完全一致，否则登录等写请求会被 Origin 校验拒绝。
+- 模型回答可能长时间没有数据（非流式请求整段生成完才返回、推理模型首字很慢），反向代理和云负载均衡需按下文「反向代理」配置，否则长回答会被代理截断、卡住或以 413 拒绝。
+- 会话正文默认存主库。设置 `WORKDSH_BODY_STORE=s3` 及 `WORKDSH_BODY_S3_*` 后写入 S3 兼容对象存储；已有正文需设 `WORKDSH_BODY_STORE_MIGRATE=true` 启动一次迁移（后台分批执行，可中断重跑）。对象存储的生命周期规则不要早于组织设置的正文保留天数。
+- 正文保留天数在管理后台「企业设置」按组织配置（默认永久保留），每日北京时间 03:30 清理到期正文，可用 `WORKDSH_MAINTENANCE_CRON` / `WORKDSH_MAINTENANCE_ZONE` 调整。
 - 切换数据库后需重新初始化：PostgreSQL 迁移链只用于新验收库，不接管已有未版本化数据库，也不迁移旧测试数据。
+
+## 反向代理
+
+公网入口通常是 nginx（或云负载均衡）终止 TLS 后转发到 `127.0.0.1:18890`。模型网关 `/api/model-gateway/` 有四点要求，只调大超时并不够：
+
+| 要求 | 原因 | nginx 配置 |
+| --- | --- | --- |
+| 读超时不小于网关自身时限 | nginx 的读超时是两次读取之间的最长间隔。非流式请求在回答生成完之前没有任何字节，推理模型可能长时间不出字。网关等待上游开始响应最长 `WORKDSH_GATEWAY_RESPONSE_TIMEOUT`，流式中途最长静默 `WORKDSH_GATEWAY_STREAM_IDLE_TIMEOUT`（默认均为 5 分钟）。代理读超时应不小于两者中较大者并留余量，这样超时由网关判定，调用方收到带错误码的 JSON，而不是代理的 HTML 504 | `proxy_read_timeout 360s;` |
+| 不缓冲、不压缩 | 缓冲或 gzip 会把流式回答攒到缓冲区满或回答结束才发出，客户端表现为卡住后一次性吐出 | `proxy_buffering off;` `gzip off;`（网关的转发响应已带 `X-Accel-Buffering: no`，nginx 会对这些响应自动关闭缓冲；显式配置作为兜底） |
+| 请求体上限足够 | nginx 默认 `client_max_body_size` 为 1 MB；网关允许 4 MB 请求体（长上下文、图片），协作材料上限约 5 MB 文件（Base64 后更大） | `client_max_body_size 16m;` |
+| HTTP/1.1 长连接到后台 | 保证分块传输正常 | `proxy_http_version 1.1;` `proxy_set_header Connection "";` |
+
+单次响应的总时长另由后台 `WORKDSH_GATEWAY_MAX_RESPONSE_DURATION`（默认 30 分钟）限制。
+
+参考配置（证书路径、域名按实际替换；`WORKDSH_ADMIN_WEB_ORIGIN` 设为 `https://admin.example.com`）：
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name admin.example.com;
+    ssl_certificate     /etc/nginx/certs/admin.example.com.crt;
+    ssl_certificate_key /etc/nginx/certs/admin.example.com.key;
+
+    client_max_body_size 16m;
+
+    location / {
+        proxy_pass http://127.0.0.1:18890;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_read_timeout 60s;
+    }
+
+    # 模型网关：长时间无数据、流式逐块转发
+    location /api/model-gateway/ {
+        proxy_pass http://127.0.0.1:18890;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_buffering off;
+        proxy_cache off;
+        gzip off;
+        proxy_read_timeout 360s;
+        proxy_send_timeout 360s;
+    }
+}
+```
+
+nginx 前面如果还有云负载均衡（阿里云 SLB、AWS ALB 等），其空闲超时默认通常为 60 秒，需同样调到不小于上表的读超时，否则长回答在负载均衡处被断开。调整 `WORKDSH_GATEWAY_RESPONSE_TIMEOUT` 或 `WORKDSH_GATEWAY_STREAM_IDLE_TIMEOUT` 时，代理与负载均衡的超时要一起调整。

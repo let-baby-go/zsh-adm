@@ -27,8 +27,10 @@ public class DesktopVisibleSessions {
     public record Submission(int version,String deviceId,String sessionId,long revision,String requestId,List<Entry> entries) {}
     public record Receipt(int version,String sessionId,String deviceId,String clientSessionId,long revision,long nextRevision,long recordCount,boolean deleted) {}
     private record Stored(String device,String serverId,long revision,long count,long deletedAt) {}
-    private final JdbcTemplate db; private final AuthService auth; private final DatabaseDialect dialect; private final ObjectMapper json;
-    public DesktopVisibleSessions(JdbcTemplate db,AuthService auth,DatabaseDialect dialect,ObjectMapper json){this.db=db;this.auth=auth;this.dialect=dialect;this.json=json;}
+    private final JdbcTemplate db; private final AuthService auth; private final DatabaseDialect dialect; private final ObjectMapper json; private final BodyObjects objects;
+    public DesktopVisibleSessions(JdbcTemplate db,AuthService auth,DatabaseDialect dialect,ObjectMapper json,BodyObjects objects){this.db=db;this.auth=auth;this.dialect=dialect;this.json=json;this.objects=objects;}
+    /** An accepted record as compared on later submissions: the text by its SHA-256 only. */
+    private record Accepted(long seq,String recordId,String role,String sha256) {}
     private static ResponseStatusException error(HttpStatus code,String reason){return new ResponseStatusException(code,reason);}
     private static void fields(JsonNode node,Set<String> expected){
         if(node==null||!node.isObject())throw error(HttpStatus.BAD_REQUEST,"Expected a visible-text object");
@@ -86,12 +88,17 @@ public class DesktopVisibleSessions {
             return new Receipt(1,s.serverId(),s.device(),payload.sessionId(),(long)p[0],(long)p[0]+1,(long)p[2],false);
         }
         if(payload.revision()!=s.revision()+1)throw error(HttpStatus.CONFLICT,"Desktop revision is out of order");
-        var old=db.query(dialect.lock("select record_seq,record_id,role,body_text from member_desktop_body_records where organization_id=? and member_id=? and client_session_id=? order by record_seq"),(rs,n)->new Entry(rs.getLong(1),rs.getString(2),rs.getString(3),rs.getString(4)),a.organizationId(),a.id(),payload.sessionId());
+        // Rows written before hashes existed fall back to hashing their inline text.
+        var old=db.query(dialect.lock("select record_seq,record_id,role,body_sha256,body_text from member_desktop_body_records where organization_id=? and member_id=? and client_session_id=? order by record_seq"),(rs,n)->new Accepted(rs.getLong(1),rs.getString(2),rs.getString(3),rs.getString(4)!=null?rs.getString(4):digest(rs.getString(5))),a.organizationId(),a.id(),payload.sessionId());
         if(payload.entries().size()<=old.size())throw error(HttpStatus.CONFLICT,"Snapshot must append new visible records");
-        if(!payload.entries().subList(0,old.size()).equals(old))throw error(HttpStatus.CONFLICT,"Accepted visible text is immutable");
+        if(!payload.entries().subList(0,old.size()).stream().map(e->new Accepted(e.seq(),e.recordId(),e.role(),digest(e.text()))).toList().equals(old))throw error(HttpStatus.CONFLICT,"Accepted visible text is immutable");
         long received=System.currentTimeMillis();
-        for(var e:payload.entries().subList(old.size(),payload.entries().size()))db.update("insert into member_desktop_body_records(organization_id,member_id,client_session_id,record_seq,record_id,role,body_text,received_at) values (?,?,?,?,?,?,?,?)",a.organizationId(),a.id(),payload.sessionId(),e.seq(),e.recordId(),e.role(),e.text(),received);
-        long count=payload.entries().size();db.update("update member_desktop_body_sessions set revision=?,record_count=? where organization_id=? and member_id=? and client_session_id=?",payload.revision(),count,a.organizationId(),a.id(),payload.sessionId());
+        for(var e:payload.entries().subList(old.size(),payload.entries().size())){
+            String key=null,inline=e.text();
+            if(objects.external()){key=BodyObjects.key(a.organizationId(),a.id(),payload.sessionId(),e.seq());objects.put(key,e.text());inline=null;}
+            db.update("insert into member_desktop_body_records(organization_id,member_id,client_session_id,record_seq,record_id,role,body_text,body_sha256,storage_key,received_at) values (?,?,?,?,?,?,?,?,?,?)",a.organizationId(),a.id(),payload.sessionId(),e.seq(),e.recordId(),e.role(),inline,digest(e.text()),key,received);
+        }
+        long count=payload.entries().size();db.update("update member_desktop_body_sessions set revision=?,record_count=?,last_received_at=? where organization_id=? and member_id=? and client_session_id=?",payload.revision(),count,received,a.organizationId(),a.id(),payload.sessionId());
         db.update("insert into member_desktop_body_receipts(organization_id,member_id,client_session_id,request_id,revision,payload_hash,record_count) values (?,?,?,?,?,?,?)",a.organizationId(),a.id(),payload.sessionId(),payload.requestId(),payload.revision(),hash,count);
         return receipt(new Stored(s.device(),s.serverId(),payload.revision(),count,0),payload.sessionId());
     }
@@ -99,7 +106,18 @@ public class DesktopVisibleSessions {
     @Transactional
     public Receipt delete(String bearer,String deviceId,String sessionId){
         var a=mutationActor(bearer);identifier(deviceId);identifier(sessionId);var s=find(a,sessionId,true);if(s==null)throw error(HttpStatus.NOT_FOUND,"Desktop body session not found");device(s,deviceId);
-        if(s.deletedAt()==0){db.update("delete from member_desktop_body_records where organization_id=? and member_id=? and client_session_id=?",a.organizationId(),a.id(),sessionId);db.update("update member_desktop_body_sessions set record_count=0,deleted_at=? where organization_id=? and member_id=? and client_session_id=?",System.currentTimeMillis(),a.organizationId(),a.id(),sessionId);}
+        if(s.deletedAt()==0)erase(a.organizationId(),a.id(),sessionId,System.currentTimeMillis());
         return receipt(new Stored(s.device(),s.serverId(),s.revision(),0,1),sessionId);
+    }
+    /**
+     * Removes a session's text and leaves its tombstone, so later Desktop submissions receive 410. Used by the
+     * member's own delete and by organization retention. The caller holds the session row lock or a transaction.
+     * External objects are deleted after commit.
+     */
+    void erase(String organizationId,String memberId,String clientSessionId,long now){
+        var keys=db.queryForList(dialect.lock("select storage_key from member_desktop_body_records where organization_id=? and member_id=? and client_session_id=? and storage_key is not null"),String.class,organizationId,memberId,clientSessionId);
+        db.update("delete from member_desktop_body_records where organization_id=? and member_id=? and client_session_id=?",organizationId,memberId,clientSessionId);
+        db.update("update member_desktop_body_sessions set record_count=0,deleted_at=? where organization_id=? and member_id=? and client_session_id=?",now,organizationId,memberId,clientSessionId);
+        objects.deleteAfterCommit(keys);
     }
 }

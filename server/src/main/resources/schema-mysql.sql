@@ -109,6 +109,7 @@ create table if not exists organization_policies (
  directory_scope varchar(24) not null default 'ORGANIZATION',
  sharing_enabled boolean not null default true,
  revision integer not null default 1,
+ body_retention_days integer not null default 0,
  foreign key (organization_id) references organizations(id)
 );
 
@@ -158,6 +159,7 @@ create table if not exists member_desktop_body_sessions (
  revision bigint not null default 0,
  record_count bigint not null default 0,
  deleted_at bigint not null default 0,
+ last_received_at bigint not null default 0,
  primary key (organization_id,member_id,client_session_id),
  unique (organization_id,member_id,server_session_id),
  foreign key (organization_id) references organizations(id),
@@ -170,7 +172,9 @@ create table if not exists member_desktop_body_records (
  record_seq bigint not null,
  record_id varchar(128) character set ascii collate ascii_bin not null,
  role varchar(16) not null,
- body_text longtext not null,
+ body_text longtext,
+ body_sha256 varchar(64),
+ storage_key varchar(512),
  received_at bigint not null,
  primary key (organization_id,member_id,client_session_id,record_seq),
  unique (organization_id,member_id,client_session_id,record_id),
