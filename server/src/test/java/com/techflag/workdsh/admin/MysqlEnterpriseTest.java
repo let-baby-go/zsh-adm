@@ -39,7 +39,7 @@ class MysqlEnterpriseTest {
   assertThrows(ResponseStatusException.class,()->secrets.read(bt,ref));
   secrets.write(bt,ref,"fixture-b");secrets.delete(at,ref);
   assertNull(secrets.read(at,ref));assertEquals("fixture-b",secrets.read(bt,ref));
-  var sent=collaboration.send(at,new CollaborationController.NewHandoff(b,"共享分析结果",UUID.randomUUID().toString()));
+  var sent=collaboration.send(at,new CollaborationService.NewHandoff(b,"共享分析结果",UUID.randomUUID().toString()));
   assertEquals(a,sent.senderId());assertEquals(b,sent.recipientId());
   var grant=json.valueToTree(java.util.Map.of("kind","grant","payload",java.util.Map.of("token","fixture-record-a")));
   String recordKey="mcp-plugin/account";

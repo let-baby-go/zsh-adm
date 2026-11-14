@@ -10,8 +10,8 @@ public class AdminSessionsController {
  public record Summary(String memberId,String memberName,String sessionId,long createdAt,long eventCount){}
  public record Message(long seq,long time,String role,JsonNode content){}
  public record Detail(List<Message> messages,long nextOffset,boolean hasMore){}
- private final JdbcTemplate db;private final AuthService auth;private final ObjectMapper json;private final MemberController members;
- public AdminSessionsController(JdbcTemplate db,AuthService auth,ObjectMapper json,MemberController members){this.db=db;this.auth=auth;this.json=json;this.members=members;}
+ private final JdbcTemplate db;private final AuthService auth;private final ObjectMapper json;private final AuditLog audit;
+ public AdminSessionsController(JdbcTemplate db,AuthService auth,ObjectMapper json,AuditLog audit){this.db=db;this.auth=auth;this.json=json;this.audit=audit;}
  private AuthService.Actor admin(String token){var a=auth.actor(token);auth.requireReady(a);auth.requireAdmin(a);return a;}
  private JsonNode decode(String value){try{return json.readTree(value);}catch(Exception e){throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"Malformed session storage");}}
  @GetMapping public List<Summary> list(@RequestHeader(value="Authorization",required=false) String token,@RequestParam(defaultValue="0") int offset,@RequestParam(defaultValue="50") int limit){
@@ -32,7 +32,7 @@ public class AdminSessionsController {
   }
   var messages=events.stream().filter(e->List.of("user/message","assistant/message").contains(e.path("type").asText())).map(e->{var data=e.path("data");var user="user/message".equals(e.path("type").asText());return new Message(e.path("seq").asLong(),e.path("time").asLong(),user?"user":"assistant",user?data.path("content"):data.path("message").path("content"));}).toList();
   long next=events.isEmpty()?offset:events.get(events.size()-1).path("seq").asLong()+1;
-  members.audit(a,"session.content.viewed",java.util.UUID.nameUUIDFromBytes((a.organizationId()+":"+memberId+":"+sessionId).getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString());
+  audit.record(a,"session.content.viewed",java.util.UUID.nameUUIDFromBytes((a.organizationId()+":"+memberId+":"+sessionId).getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString());
   return new Detail(messages,next,!events.isEmpty()&&next<count);
  }
 }

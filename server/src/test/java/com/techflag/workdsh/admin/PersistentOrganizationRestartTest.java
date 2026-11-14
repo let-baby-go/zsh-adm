@@ -81,7 +81,7 @@ class PersistentOrganizationRestartTest {
             call("GET","/api/collaboration/materials/"+materialId,admin,null,404);
             call("POST","/api/collaboration/materials",a,Map.of("recipientId",bId,"summary","策略已关闭","requestKey","after-restart","context","新的共享内容","files",List.of()),403);
             call("POST","/api/auth/login",null,Map.of("email","restart-c@example.test","password",password),401);
-            assertEquals(4,call("GET","/api/admin/members",admin,null,200).size(),"Bootstrap must not duplicate members on restart");
+            assertEquals(4,call("GET","/api/admin/members/summary",admin,null,200).path("total").asLong(),"Bootstrap must not duplicate members on restart");
         }
     }
 }

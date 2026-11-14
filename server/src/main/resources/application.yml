@@ -13,7 +13,18 @@ spring:
   sql:
     init:
       mode: always
+  mvc:
+    # Longest single gateway response, streams included. The container default (30s on Tomcat) cut long
+    # model answers short.
+    async:
+      request-timeout: ${WORKDSH_GATEWAY_MAX_RESPONSE_DURATION:30m}
+    problemdetails:
+      enabled: true
 workdsh:
+  gateway:
+    connect-timeout: ${WORKDSH_GATEWAY_CONNECT_TIMEOUT:15s}
+    response-timeout: ${WORKDSH_GATEWAY_RESPONSE_TIMEOUT:5m}
+    stream-idle-timeout: ${WORKDSH_GATEWAY_STREAM_IDLE_TIMEOUT:5m}
   web:
     origin: ${WORKDSH_ADMIN_WEB_ORIGIN:http://127.0.0.1:18891}
   bootstrap:

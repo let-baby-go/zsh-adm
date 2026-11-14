@@ -1,7 +1,5 @@
 package com.techflag.workdsh.admin;
 
-import java.sql.Timestamp;
-import java.time.Instant;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
@@ -22,8 +20,9 @@ import org.springframework.web.server.ResponseStatusException;
 public class MemberController {
     private final JdbcTemplate db;
     private final AuthService auth;
+    private final AuditLog audit;
 
-    public MemberController(JdbcTemplate db, AuthService auth) { this.db = db; this.auth = auth; }
+    public MemberController(JdbcTemplate db, AuthService auth, AuditLog audit) { this.db = db; this.auth = auth; this.audit = audit; }
 
     public record Member(String id, String email, String displayName, String role, boolean active,
                          boolean mustChangePassword, int revision) {}
@@ -31,7 +30,6 @@ public class MemberController {
                             @NotBlank String role) {}
     public record CreatedMember(Member member, String temporaryPassword) {}
     public record UpdateMember(String role, Boolean active, int expectedRevision) {}
-    public record Audit(String id, String actorId, String action, String targetId, Instant occurredAt) {}
 
     @GetMapping("/members")
     public List<Member> directory(@RequestHeader(value="Authorization", required=false) String bearer) {
@@ -41,12 +39,64 @@ public class MemberController {
                 (rs,n)->new Member(rs.getString("id"),rs.getString("email"),rs.getString("display_name"),rs.getString("role"),rs.getBoolean("active"),rs.getBoolean("must_change_password"),rs.getInt("revision")),actor.organizationId(),actor.id());
     }
 
-    @GetMapping("/admin/members")
-    public List<Member> all(@RequestHeader(value="Authorization", required=false) String bearer) {
+    public record MemberPage(List<Member> items, long total) {}
+    public record MemberSummary(long total, long active, long admins) {}
+
+    private AuthService.Actor admin(String bearer) {
         var actor = auth.actor(bearer);
         auth.requireReady(actor);
         auth.requireAdmin(actor);
-        return members(actor.organizationId(), false);
+        return actor;
+    }
+
+    @GetMapping("/admin/members/summary")
+    public MemberSummary summary(@RequestHeader(value="Authorization", required=false) String bearer) {
+        return db.queryForObject("select count(*),coalesce(sum(case when active then 1 else 0 end),0),coalesce(sum(case when role<>'MEMBER' then 1 else 0 end),0) from members where organization_id=?",
+                (rs, n) -> new MemberSummary(rs.getLong(1), rs.getLong(2), rs.getLong(3)), admin(bearer).organizationId());
+    }
+
+    /**
+     * One page of members ordered by name. {@code q} matches name, email, login username or employee number;
+     * {@code departments} limits to those primary departments (the caller expands sub-departments);
+     * {@code unassigned} selects members without a primary department.
+     */
+    @GetMapping("/admin/members/search")
+    public MemberPage search(@RequestHeader(value="Authorization", required=false) String bearer,
+                             @RequestParam(defaultValue="") String q,
+                             @RequestParam(defaultValue="all") String status,
+                             @RequestParam(required=false) List<String> departments,
+                             @RequestParam(defaultValue="false") boolean unassigned,
+                             @RequestParam(defaultValue="0") int offset,
+                             @RequestParam(defaultValue="50") int limit) {
+        var actor = admin(bearer);
+        if (offset < 0 || limit < 1 || limit > 100 || q.length() > 128 || !List.of("all", "active", "disabled").contains(status)
+                || (departments != null && departments.size() > 1000)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid member query");
+        }
+        StringBuilder where = new StringBuilder(" from members m left join member_profiles p on p.member_id=m.id where m.organization_id=?");
+        List<Object> args = new java.util.ArrayList<>(List.of(actor.organizationId()));
+        if (!status.equals("all")) { where.append(" and m.active=?"); args.add(status.equals("active")); }
+        if (!q.isBlank()) {
+            String pattern = "%" + q.trim().toLowerCase(Locale.ROOT).replace("!", "!!").replace("%", "!%").replace("_", "!_") + "%";
+            where.append(" and (lower(m.display_name) like ? escape '!' or lower(m.email) like ? escape '!'"
+                    + " or lower(coalesce(p.username,'')) like ? escape '!' or lower(coalesce(p.employee_number,'')) like ? escape '!')");
+            for (int i = 0; i < 4; i++) args.add(pattern);
+        }
+        if (unassigned) where.append(" and (p.department_id is null or p.department_id='')");
+        else if (departments != null) {
+            if (departments.isEmpty()) return new MemberPage(List.of(), 0);
+            where.append(" and p.department_id in (").append(String.join(",", java.util.Collections.nCopies(departments.size(), "?"))).append(")");
+            args.addAll(departments);
+        }
+        long total = db.queryForObject("select count(*)" + where, Long.class, args.toArray());
+        List<Object> pageArgs = new java.util.ArrayList<>(args);
+        pageArgs.add(limit);
+        pageArgs.add(offset);
+        var items = db.query("select m.id,m.email,m.display_name,m.role,m.active,m.must_change_password,m.revision" + where
+                        + " order by m.display_name,m.id limit ? offset ?",
+                (rs, n) -> new Member(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4),
+                        rs.getBoolean(5), rs.getBoolean(6), rs.getInt(7)), pageArgs.toArray());
+        return new MemberPage(items, total);
     }
 
     @PostMapping("/admin/members")
@@ -70,7 +120,7 @@ public class MemberController {
         } catch (DuplicateKeyException e) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Member email already exists");
         }
-        audit(actor, "member.created", id);
+        audit.record(actor, "member.created", id);
         return new CreatedMember(new Member(id, request.email().trim().toLowerCase(Locale.ROOT),
                 request.displayName().trim(), request.role(), true, true, 1), temporaryPassword);
     }
@@ -101,26 +151,18 @@ public class MemberController {
         if (!active) {
             db.update("delete from auth_sessions where member_id=?", id);
         }
-        audit(actor, active ? "member.updated" : "member.disabled", id);
+        audit.record(actor, active ? "member.updated" : "member.disabled", id);
         return member(actor.organizationId(), id);
     }
 
+    /** Newest first, at most 100 entries per page. */
     @GetMapping("/admin/audit")
-    public List<Audit> auditList(@RequestHeader(value="Authorization", required=false) String bearer) {
-        var actor = auth.actor(bearer);
-        auth.requireReady(actor);
-        auth.requireAdmin(actor);
-        return db.query("select id,actor_id,action,target_id,occurred_at from audit_events where organization_id=? order by occurred_at desc limit 100",
-                (rs, n) -> new Audit(rs.getString("id"), rs.getString("actor_id"), rs.getString("action"),
-                        rs.getString("target_id"), rs.getTimestamp("occurred_at").toInstant()), actor.organizationId());
-    }
-
-    private List<Member> members(String org, boolean activeOnly) {
-        return db.query("select id,email,display_name,role,active,must_change_password,revision from members where organization_id=?"
-                        + (activeOnly ? " and active=true" : "") + " order by display_name",
-                (rs, n) -> new Member(rs.getString("id"), rs.getString("email"), rs.getString("display_name"),
-                        rs.getString("role"), rs.getBoolean("active"), rs.getBoolean("must_change_password"),
-                        rs.getInt("revision")), org);
+    public List<AuditLog.Entry> auditList(@RequestHeader(value="Authorization", required=false) String bearer,
+                                          @RequestParam(defaultValue="0") int offset,
+                                          @RequestParam(defaultValue="50") int limit) {
+        var actor = admin(bearer);
+        if (offset < 0 || limit < 1 || limit > 100) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid page");
+        return audit.page(actor.organizationId(), offset, limit);
     }
 
     private Member member(String org, String id) {
@@ -129,11 +171,5 @@ public class MemberController {
                         rs.getString("role"), rs.getBoolean("active"), rs.getBoolean("must_change_password"),
                         rs.getInt("revision")), org, id).stream().findFirst()
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Member not found"));
-    }
-
-    void audit(AuthService.Actor actor, String action, String targetId) {
-        db.update("insert into audit_events(id,organization_id,actor_id,action,target_id,occurred_at) values (?,?,?,?,?,?)",
-                UUID.randomUUID().toString(), actor.organizationId(), actor.id(), action, targetId,
-                Timestamp.from(Instant.now()));
     }
 }

@@ -11,8 +11,8 @@ import org.springframework.web.server.ResponseStatusException;
 
 @Service
 public class ModelProviders {
- private final JdbcTemplate db; private final AuthService auth; private final MemberSecrets secrets; private final DatabaseDialect dialect; private final ObjectMapper json; private final MemberController audit;
- public ModelProviders(JdbcTemplate db,AuthService auth,MemberSecrets secrets,DatabaseDialect dialect,ObjectMapper json,MemberController audit){this.db=db;this.auth=auth;this.secrets=secrets;this.dialect=dialect;this.json=json;this.audit=audit;}
+ private final JdbcTemplate db; private final AuthService auth; private final MemberSecrets secrets; private final DatabaseDialect dialect; private final ObjectMapper json; private final AuditLog audit;
+ public ModelProviders(JdbcTemplate db,AuthService auth,MemberSecrets secrets,DatabaseDialect dialect,ObjectMapper json,AuditLog audit){this.db=db;this.auth=auth;this.secrets=secrets;this.dialect=dialect;this.json=json;this.audit=audit;}
  public record Model(String id,String displayName,Long contextWindow,Long maxOutputTokens,boolean images){}
  public record Provider(String id,String displayName,String baseUrl,String protocol,boolean enabled,List<Model> models,boolean hasKey,String apiKey){}
  public record View(long revision,List<Provider> providers){}
@@ -25,7 +25,7 @@ public class ModelProviders {
   return new Stored(0,List.of());
  }
  public View read(AuthService.Actor actor){auth.requireReady(actor);auth.requireAdmin(actor);var s=stored(actor.organizationId());return new View(s.revision,s.providers.stream().map(p->new Provider(p.id,p.displayName,p.baseUrl,p.protocol,p.enabled,p.models,p.hasKey,null)).toList());}
- public String reveal(AuthService.Actor actor,String id){auth.requireReady(actor);auth.requireAdmin(actor);var provider=stored(actor.organizationId()).providers.stream().filter(p->p.id.equals(id)).findFirst().orElseThrow(()->new ResponseStatusException(HttpStatus.NOT_FOUND));if(!provider.hasKey)throw new ResponseStatusException(HttpStatus.NOT_FOUND,"API key not configured");String value=secrets.cryptOrganizationModel(false,actor.organizationId(),provider.apiKey);audit.audit(actor,"organization.model.provider.key.viewed",id);return value;}
+ public String reveal(AuthService.Actor actor,String id){auth.requireReady(actor);auth.requireAdmin(actor);var provider=stored(actor.organizationId()).providers.stream().filter(p->p.id.equals(id)).findFirst().orElseThrow(()->new ResponseStatusException(HttpStatus.NOT_FOUND));if(!provider.hasKey)throw new ResponseStatusException(HttpStatus.NOT_FOUND,"API key not configured");String value=secrets.cryptOrganizationModel(false,actor.organizationId(),provider.apiKey);audit.record(actor,"organization.model.provider.key.viewed",id);return value;}
  @Transactional public View update(AuthService.Actor actor,Update update){
   auth.requireReady(actor);auth.requireAdmin(actor);
   if(update==null||update.expectedRevision<0||update.providers==null||update.providers.size()>32)bad("Invalid providers");
@@ -42,7 +42,7 @@ public class ModelProviders {
    next.add(new Provider(p.id,p.displayName,p.baseUrl,p.protocol,p.enabled,List.copyOf(p.models),!encrypted.isEmpty(),encrypted));
   }
   try{String payload=json.writeValueAsString(next);if(current.revision==0)db.update("insert into organization_model_providers(organization_id,revision,providers_json) values(?,1,?)",org,payload);else if(db.update("update organization_model_providers set revision=?,providers_json=? where organization_id=? and revision=?",current.revision+1,payload,org,current.revision)!=1)throw new ResponseStatusException(HttpStatus.CONFLICT);}catch(ResponseStatusException e){throw e;}catch(Exception e){throw new IllegalStateException("Cannot save providers",e);}
-  audit.audit(actor,"organization.model.providers.updated",org);return read(actor);
+  audit.record(actor,"organization.model.providers.updated",org);return read(actor);
  }
  private static boolean validLimit(Long value){return value==null||value>0&&value<=100000000;}
  private static void bad(String message){throw new ResponseStatusException(HttpStatus.BAD_REQUEST,message);}

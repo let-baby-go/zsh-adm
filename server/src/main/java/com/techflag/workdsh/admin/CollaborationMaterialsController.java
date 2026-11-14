@@ -17,11 +17,17 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 @RestController
 @RequestMapping("/api/collaboration/materials")
 public class CollaborationMaterialsController {
-    private final CollaborationController collaboration;
+    private final CollaborationService collaboration;
+    private final AuthService auth;
     private final JdbcTemplate db;
     private final ObjectMapper json;
-    public CollaborationMaterialsController(CollaborationController collaboration, JdbcTemplate db, ObjectMapper json) {
-        this.collaboration=collaboration; this.db=db; this.json=json;
+    public CollaborationMaterialsController(CollaborationService collaboration, AuthService auth, JdbcTemplate db, ObjectMapper json) {
+        this.collaboration=collaboration; this.auth=auth; this.db=db; this.json=json;
+    }
+    private AuthService.Actor ready(String authorization) {
+        var actor = auth.actor(authorization);
+        auth.requireReady(actor);
+        return actor;
     }
     public record FileItem(@NotBlank @Size(max=200) String name, @NotBlank String sha256,
                            @NotBlank @Size(max=7000000) String data) {}
@@ -33,8 +39,9 @@ public class CollaborationMaterialsController {
     public record Materials(String context,List<FileItem> files) {}
     @PostMapping
     @Transactional
-    public CollaborationController.Handoff send(@RequestHeader(value="Authorization",required=false) String authorization,
+    public CollaborationService.Handoff send(@RequestHeader(value="Authorization",required=false) String authorization,
                                                 @Valid @RequestBody Bundle input) throws Exception {
+        var actor=ready(authorization);
         int total=0;
         for(var file:input.files()) {
             if(file.name().contains("/")||file.name().contains("\\")||file.name().contains("\0"))
@@ -46,7 +53,7 @@ public class CollaborationMaterialsController {
             if(!HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes)).equals(file.sha256()))
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"File checksum mismatch");
         }
-        var handoff=collaboration.send(authorization,new CollaborationController.NewHandoff(input.recipientId(),input.summary(),input.requestKey()));
+        var handoff=collaboration.send(actor,new CollaborationService.NewHandoff(input.recipientId(),input.summary(),input.requestKey()));
         String payload=json.writeValueAsString(new Materials(input.context(),input.files()));
         var existing=db.query("select payload from collaboration_materials where handoff_id=?",(rs,n)->rs.getString(1),handoff.id());
         if(!existing.isEmpty()) {
@@ -56,8 +63,8 @@ public class CollaborationMaterialsController {
     }
     @GetMapping("/{id}")
     public Materials read(@RequestHeader(value="Authorization",required=false) String authorization,@PathVariable String id) throws Exception {
-        // Existing controller verifies active membership, organization and sender/recipient ACL.
-        collaboration.detail(authorization,id);
+        // Handoff access check: active ready member, same organization, sender or recipient.
+        collaboration.detail(ready(authorization),id);
         var rows=db.query("select payload from collaboration_materials where handoff_id=?",(rs,n)->rs.getString(1),id);
         if(rows.isEmpty())throw new ResponseStatusException(HttpStatus.NOT_FOUND,"No shared materials");
         return json.readValue(rows.get(0),Materials.class);

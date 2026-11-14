@@ -1,3 +1,6 @@
+-- WorkDSH Admin full schema for MySQL 8. Run once on an empty database created with utf8mb4; the
+-- enterprise-mysql profile does not initialize or migrate the schema itself. Kept structurally identical
+-- to schema.sql by SchemaStructureTest.
 create table if not exists organizations (
   id varchar(36) primary key,
   name varchar(160) not null
@@ -185,3 +188,8 @@ create table if not exists member_desktop_body_receipts (
  unique (organization_id,member_id,client_session_id,revision),
  foreign key (organization_id,member_id,client_session_id) references member_desktop_body_sessions(organization_id,member_id,client_session_id)
 );
+
+-- List and paging queries: audit log newest first, member directory by name, Desktop sessions newest first.
+create index audit_events_recent on audit_events(organization_id,occurred_at);
+create index members_directory on members(organization_id,display_name);
+create index desktop_body_sessions_recent on member_desktop_body_sessions(organization_id,deleted_at,created_at);

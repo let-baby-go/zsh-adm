@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
-    "build": "vite build"
+    "build": "vite build",
+    "test": "vitest run"
   },
   "dependencies": {
     "@arco-design/web-vue": "2.58.0",
@@ -13,6 +14,9 @@
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "5.2.4",
-    "vite": "6.3.5"
+    "@vue/test-utils": "2.4.6",
+    "jsdom": "26.1.0",
+    "vite": "6.3.5",
+    "vitest": "3.2.4"
   }
 }

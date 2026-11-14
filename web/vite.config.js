@@ -10,4 +10,5 @@ export default defineConfig({
   plugins: [vue()],
   server: { https, port: Number(process.env.WORKDSH_WEB_PORT || 18891),
     proxy: { '/api': process.env.WORKDSH_ADMIN_URL || 'http://127.0.0.1:18890' } },
+  test: { environment: 'jsdom', setupFiles: ['./src/__tests__/setup.js'] },
 })
