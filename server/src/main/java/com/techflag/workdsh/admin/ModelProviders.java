@@ -11,8 +11,10 @@ import org.springframework.web.server.ResponseStatusException;
 
 @Service
 public class ModelProviders {
- private final JdbcTemplate db; private final AuthService auth; private final MemberSecrets secrets; private final DatabaseDialect dialect; private final ObjectMapper json; private final AuditLog audit;
- public ModelProviders(JdbcTemplate db,AuthService auth,MemberSecrets secrets,DatabaseDialect dialect,ObjectMapper json,AuditLog audit){this.db=db;this.auth=auth;this.secrets=secrets;this.dialect=dialect;this.json=json;this.audit=audit;}
+ private final JdbcTemplate db; private final AuthService auth; private final MemberSecrets secrets; private final DatabaseDialect dialect; private final ObjectMapper json; private final AuditLog audit; private final GatewayCache cache;
+ public ModelProviders(JdbcTemplate db,AuthService auth,MemberSecrets secrets,DatabaseDialect dialect,ObjectMapper json,AuditLog audit,GatewayCache cache){this.db=db;this.auth=auth;this.secrets=secrets;this.dialect=dialect;this.json=json;this.audit=audit;this.cache=cache;}
+ /** Gateway path: cached configuration; supplier keys are still encrypted and decrypted per call in resolve(). */
+ private List<Provider> routing(String org){return cache.providers(org,()->List.copyOf(stored(org).providers));}
  public record Model(String id,String displayName,Long contextWindow,Long maxOutputTokens,boolean images){}
  public record Provider(String id,String displayName,String baseUrl,String protocol,boolean enabled,List<Model> models,boolean hasKey,String apiKey){}
  public record View(long revision,List<Provider> providers){}
@@ -42,10 +44,10 @@ public class ModelProviders {
    next.add(new Provider(p.id,p.displayName,p.baseUrl,p.protocol,p.enabled,List.copyOf(p.models),!encrypted.isEmpty(),encrypted));
   }
   try{String payload=json.writeValueAsString(next);if(current.revision==0)db.update("insert into organization_model_providers(organization_id,revision,providers_json) values(?,1,?)",org,payload);else if(db.update("update organization_model_providers set revision=?,providers_json=? where organization_id=? and revision=?",current.revision+1,payload,org,current.revision)!=1)throw new ResponseStatusException(HttpStatus.CONFLICT);}catch(ResponseStatusException e){throw e;}catch(Exception e){throw new IllegalStateException("Cannot save providers",e);}
-  audit.record(actor,"organization.model.providers.updated",org);return read(actor);
+  cache.invalidate(org);audit.record(actor,"organization.model.providers.updated",org);return read(actor);
  }
  private static boolean validLimit(Long value){return value==null||value>0&&value<=100000000;}
  private static void bad(String message){throw new ResponseStatusException(HttpStatus.BAD_REQUEST,message);}
- List<Map<String,Object>> catalog(String org){List<Map<String,Object>> result=new ArrayList<>();for(var p:stored(org).providers)if(p.enabled&&p.hasKey)for(var m:p.models){Map<String,Object> row=new LinkedHashMap<>();row.put("id",m.id);row.put("object","model");row.put("owned_by",p.id);row.put("name",m.displayName);if(m.contextWindow!=null)row.put("context_window",m.contextWindow);if(m.maxOutputTokens!=null)row.put("max_output_tokens",m.maxOutputTokens);row.put("input_modalities",m.images?List.of("text","image"):List.of("text"));result.add(row);}return result;}
- Resolved resolve(String org,String model,String protocol){for(var p:stored(org).providers)if(p.enabled&&p.hasKey&&p.models.stream().anyMatch(m->m.id.equals(model))){if(!p.protocol.equals(protocol))bad("Choose the protocol configured for this model interface");return new Resolved(p.baseUrl,secrets.cryptOrganizationModel(false,org,p.apiKey));}throw new ResponseStatusException(HttpStatus.FORBIDDEN,"Model is not allowed");}
+ List<Map<String,Object>> catalog(String org){List<Map<String,Object>> result=new ArrayList<>();for(var p:routing(org))if(p.enabled&&p.hasKey)for(var m:p.models){Map<String,Object> row=new LinkedHashMap<>();row.put("id",m.id);row.put("object","model");row.put("owned_by",p.id);row.put("name",m.displayName);if(m.contextWindow!=null)row.put("context_window",m.contextWindow);if(m.maxOutputTokens!=null)row.put("max_output_tokens",m.maxOutputTokens);row.put("input_modalities",m.images?List.of("text","image"):List.of("text"));result.add(row);}return result;}
+ Resolved resolve(String org,String model,String protocol){for(var p:routing(org))if(p.enabled&&p.hasKey&&p.models.stream().anyMatch(m->m.id.equals(model))){if(!p.protocol.equals(protocol))bad("Choose the protocol configured for this model interface");return new Resolved(p.baseUrl,secrets.cryptOrganizationModel(false,org,p.apiKey));}throw new ResponseStatusException(HttpStatus.FORBIDDEN,"Model is not allowed");}
 }

@@ -17,6 +17,7 @@ import org.springframework.web.server.ResponseStatusException;
  * upstream_error         502           provider answered 5xx
  * upstream_unavailable   502           connection to the provider failed
  * upstream_timeout       504           provider did not start responding within response-timeout
+ * gateway_busy           503           all stream threads busy (WORKDSH_GATEWAY_MAX_CONCURRENT_STREAMS)
  * </pre>
  */
 public class GatewayException extends ResponseStatusException {

@@ -89,6 +89,17 @@ public class ModelGateway {
         }
     }
 
+    /** All stream threads busy (spring.task.execution.pool.max-size): refuse now instead of queueing silently. */
+    @ExceptionHandler(org.springframework.core.task.TaskRejectedException.class)
+    ResponseEntity<?> busy(HttpServletRequest request) {
+        log.warn("gateway rejected uri={} status=503 outcome=gateway_busy", request.getRequestURI());
+        if (request.getAttribute(ModelForwarder.PENDING_UPSTREAM) instanceof java.io.InputStream upstream) {
+            try { upstream.close(); } catch (java.io.IOException ignored) { }
+        }
+        return error(new GatewayException(HttpStatus.SERVICE_UNAVAILABLE, "gateway_busy",
+                "Too many concurrent model responses; retry shortly"), request);
+    }
+
     /**
      * Model API callers (DSH, SDKs) receive errors in their protocol's own format; administrator endpoints in
      * this controller receive the console's problem-detail format.

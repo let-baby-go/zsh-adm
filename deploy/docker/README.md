@@ -49,6 +49,17 @@ docker compose -f docker-compose.yml -f docker-compose.postgres.yml up --build -
 
 单次响应的总时长另由后台 `WORKDSH_GATEWAY_MAX_RESPONSE_DURATION`（默认 30 分钟）限制。
 
+## 并发与连接池
+
+| 资源 | 默认 | 配置 | 说明 |
+| --- | --- | --- | --- |
+| 同时进行的模型响应 | 256 | `WORKDSH_GATEWAY_MAX_CONCURRENT_STREAMS` | 每个进行中的响应（含流式）占一个线程，按需增加、空闲 60 秒回收。达到上限时新请求立即收到 503 `gateway_busy`，不会排队，也不会向供应商发出请求。上限按「同时在等模型回答的成员数」估算，每个线程约占 1 MB 栈内存 |
+| 请求处理线程（Tomcat） | 200 | Spring Boot 默认 | 处理普通请求，以及模型请求在上游开始响应前的等待 |
+| 网关配置缓存 | 10 秒 | `WORKDSH_GATEWAY_CACHE_TTL` | 内部 Key→组织、模型接口配置缓存在内存，转发不再查库；供应商 Key 仍以密文缓存、每次调用时解密。在本实例保存配置或更换内部 Key 立即生效；多实例部署时，其他实例最长在该时长后生效（更换内部 Key 后，旧 Key 在其他实例上最多还能用这么久）。设为 0 则每次查库 |
+| 数据库连接 | 10 | `WORKDSH_DB_POOL_SIZE` | 只在单条查询期间占用，模型转发和流式输出不占连接；一般无需调大。PostgreSQL/MySQL 需确认数据库端 `max_connections` 足够容纳所有实例的连接 |
+| 获取连接超时 | 30 秒 | `WORKDSH_DB_CONNECTION_TIMEOUT_MS` | 连接被占满时请求最多等待这么久，超时报错 |
+| SQLite | 1 个连接 | 固定 | 单写者，不受上面两项影响 |
+
 参考配置（证书路径、域名按实际替换；`WORKDSH_ADMIN_WEB_ORIGIN` 设为 `https://admin.example.com`）：
 
 ```nginx

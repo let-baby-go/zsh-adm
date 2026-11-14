@@ -16,9 +16,10 @@ public class ModelGatewayKeys {
     private final AuthService auth;
     private final MemberSecrets secrets;
     private final AuditLog audit;
+    private final GatewayCache cache;
 
-    public ModelGatewayKeys(JdbcTemplate db, AuthService auth, MemberSecrets secrets, AuditLog audit) {
-        this.db = db; this.auth = auth; this.secrets = secrets; this.audit = audit;
+    public ModelGatewayKeys(JdbcTemplate db, AuthService auth, MemberSecrets secrets, AuditLog audit, GatewayCache cache) {
+        this.db = db; this.auth = auth; this.secrets = secrets; this.audit = audit; this.cache = cache;
     }
 
     static String hash(String key) {
@@ -49,6 +50,8 @@ public class ModelGatewayKeys {
             if (db.update("update organization_model_gateway_keys set encrypted_key=? where organization_id=?", encrypted, org) == 0) {
                 db.update("insert into organization_model_gateway_keys(organization_id,encrypted_key) values(?,?)", org, encrypted);
             }
+            // The previous key must stop working on the next call.
+            cache.invalidate(org);
         } else if (!configured(actor)) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Internal access key required");
         }
@@ -70,8 +73,11 @@ public class ModelGatewayKeys {
         if (token == null || token.length() < 32 || token.length() > 512) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid internal API key");
         }
-        return db.queryForList("select organization_id from organization_model_gateway where access_hash=?", String.class, hash(token))
-                .stream().findFirst()
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid internal API key"));
+        String accessHash = hash(token);
+        String organization = cache.organization(accessHash, () -> db.queryForList(
+                "select organization_id from organization_model_gateway where access_hash=?", String.class, accessHash)
+                .stream().findFirst().orElse(null));
+        if (organization == null) throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid internal API key");
+        return organization;
     }
 }

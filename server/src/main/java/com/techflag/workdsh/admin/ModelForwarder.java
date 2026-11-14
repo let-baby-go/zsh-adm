@@ -50,14 +50,27 @@ public class ModelForwarder {
         return thread;
     });
 
-    public ModelForwarder(SpringAiModelClient springAi, GatewaySettings settings) {
+    /** Request attribute holding the open upstream body until a stream thread takes it over. */
+    static final String PENDING_UPSTREAM = ModelForwarder.class.getName() + ".upstream";
+
+    /** Threads that write responses to callers (Spring MVC async); full means a new stream would be refused. */
+    private final org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor streams;
+
+    public ModelForwarder(SpringAiModelClient springAi, GatewaySettings settings,
+                          @org.springframework.beans.factory.annotation.Qualifier("applicationTaskExecutor")
+                          org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor streams) {
         this.springAi = springAi;
         this.settings = settings;
+        this.streams = streams;
         this.client = HttpClient.newBuilder().connectTimeout(settings.connectTimeout())
                 .followRedirects(HttpClient.Redirect.NEVER).build();
     }
 
     ResponseEntity<StreamingResponseBody> forward(Call call) {
+        // Refuse before the provider starts generating (and billing) an answer nobody can receive.
+        if (streams.getActiveCount() >= streams.getMaxPoolSize()) {
+            throw failed(call, new GatewayException(HttpStatus.SERVICE_UNAVAILABLE, "gateway_busy", "Too many concurrent model responses; retry shortly"));
+        }
         if (call.anthropic() && !call.streaming()) return anthropicViaSpringAi(call);
         var target = call.anthropic() ? UpstreamEndpoint.anthropic(call.connection().baseUrl()) : UpstreamEndpoint.openAi(call.connection().baseUrl());
         var request = HttpRequest.newBuilder(target.uri()).timeout(settings.responseTimeout()).header("Content-Type", "application/json");
@@ -81,6 +94,9 @@ public class ModelForwarder {
         }
         String contentType = reply.headers().firstValue("Content-Type").orElse(call.streaming() ? "text/event-stream" : "application/json");
         // X-Accel-Buffering: nginx (and compatible proxies) relay each chunk immediately even without proxy_buffering off.
+        // If no stream thread is free after all, ModelGateway closes this body, which cancels the upstream request.
+        var attributes = org.springframework.web.context.request.RequestContextHolder.getRequestAttributes();
+        if (attributes != null) attributes.setAttribute(PENDING_UPSTREAM, reply.body(), org.springframework.web.context.request.RequestAttributes.SCOPE_REQUEST);
         return ResponseEntity.ok().header("Cache-Control", "no-store").header("X-Accel-Buffering", "no")
                 .header("Content-Type", contentType).body(relay(call, reply.body()));
     }

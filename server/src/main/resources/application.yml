@@ -10,9 +10,25 @@ spring:
     url: ${JDBC_URL:jdbc:h2:file:./data/workdsh-admin;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE}
     username: ${JDBC_USER:sa}
     password: ${JDBC_PASSWORD:}
+    # Connections are held per query only (gateway forwarding and streaming hold none). The enterprise-sqlite
+    # profile keeps its single connection regardless of these values.
+    hikari:
+      maximum-pool-size: ${WORKDSH_DB_POOL_SIZE:10}
+      connection-timeout: ${WORKDSH_DB_CONNECTION_TIMEOUT_MS:30000}
   sql:
     init:
       mode: always
+  # Threads that write streamed gateway answers to callers (Spring MVC async). Spring Boot's default keeps 8
+  # threads and queues the rest, so a 9th concurrent stream got no bytes until another ended. Threads now grow
+  # on demand up to the limit; beyond it new streams are refused at once with 503 gateway_busy.
+  task:
+    execution:
+      pool:
+        core-size: 8
+        max-size: ${WORKDSH_GATEWAY_MAX_CONCURRENT_STREAMS:256}
+        queue-capacity: 0
+        keep-alive: 60s
+      thread-name-prefix: gateway-stream-
   mvc:
     # Longest single gateway response, streams included. The container default (30s on Tomcat) cut long
     # model answers short.
@@ -25,6 +41,9 @@ workdsh:
     connect-timeout: ${WORKDSH_GATEWAY_CONNECT_TIMEOUT:15s}
     response-timeout: ${WORKDSH_GATEWAY_RESPONSE_TIMEOUT:5m}
     stream-idle-timeout: ${WORKDSH_GATEWAY_STREAM_IDLE_TIMEOUT:5m}
+    # Key → organization and provider configuration are cached; saves in this instance apply at once, changes
+    # made through another instance appear within this TTL. 0 reads the database on every call.
+    cache-ttl: ${WORKDSH_GATEWAY_CACHE_TTL:10s}
   # Desktop visible text: "database" keeps it in member_desktop_body_records; "s3" stores one object per
   # record in an S3-compatible bucket (AWS S3, MinIO, OSS, COS). migrate-existing moves inline text once.
   body-store:
