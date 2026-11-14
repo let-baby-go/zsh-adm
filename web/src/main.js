@@ -1,7 +1,8 @@
 import { createApp } from 'vue'
-import ArcoVue from '@arco-design/web-vue'
-import '@arco-design/web-vue/dist/arco.css'
+// Components are imported on demand (vite.config.js); these two are called from scripts, not templates.
+import '@arco-design/web-vue/es/message/style/css.js'
+import '@arco-design/web-vue/es/modal/style/css.js'
 import App from './App.vue'
 import './style.css'
 
-createApp(App).use(ArcoVue).mount('#app')
+createApp(App).mount('#app')

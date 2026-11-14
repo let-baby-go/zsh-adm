@@ -47,7 +47,19 @@ export async function loadAudits(offset) {
   try { audits.value = await run(auditPage) } catch {}
 }
 
-export function navigate(key) { page.value = key }
+/**
+ * A page with unsaved edits registers a guard. The guard returns true to allow leaving now, or false after it
+ * has asked the user and will call proceed() itself if they agree.
+ */
+let leaveGuard = null
+export function setLeaveGuard(guard) { leaveGuard = guard }
+
+export function navigate(key) {
+  if (key === page.value) return
+  const proceed = () => { page.value = key }
+  if (leaveGuard && !leaveGuard(proceed)) return
+  proceed()
+}
 
 export async function refresh() {
   try { await run(load); refreshTick.value++ } catch {}

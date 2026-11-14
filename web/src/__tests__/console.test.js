@@ -38,9 +38,14 @@ function signIn(role) {
   store.page.value = 'members'
 }
 
+/** Pages are async components: wait for their chunks, then for the requests they start. */
+async function settle() {
+  for (let i = 0; i < 3; i++) { await vi.dynamicImportSettled(); await flushPromises() }
+}
+
 async function mountApp() {
   const wrapper = mount(App, { global: { plugins: [ArcoVue] }, attachTo: document.body })
-  await flushPromises()
+  await settle()
   return wrapper
 }
 
@@ -76,11 +81,11 @@ describe('console shell', () => {
     const wrapper = await mountApp()
     for (const [key, entry] of Object.entries(pages)) {
       store.navigate(key)
-      await flushPromises()
+      await settle()
       expect(wrapper.find('h1').text()).toBe(entry.title)
     }
     store.navigate('members')
-    await flushPromises()
+    await settle()
     expect(wrapper.text()).toContain('成员 1 人')
     wrapper.unmount()
   })
@@ -89,7 +94,7 @@ describe('console shell', () => {
     signIn('OWNER')
     const wrapper = await mountApp()
     store.navigate('settings')
-    await flushPromises()
+    await settle()
     expect(wrapper.text()).toContain('会话正文保留')
     expect(wrapper.find('.policy-panel .arco-input-number input').element.value).toBe('30')
     wrapper.unmount()

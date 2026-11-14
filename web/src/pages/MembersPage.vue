@@ -89,28 +89,40 @@ async function toggle(m) {
   })
 }
 
+/**
+ * Applies one change per member, continuing past failures, then reports what happened. Members are updated one
+ * by one because each carries its own revision.
+ */
+const progress = ref('')
+async function eachMember(targets, label, change) {
+  const failed = []
+  for (const [index, m] of targets.entries()) {
+    progress.value = `${label}中 ${index + 1}/${targets.length}`
+    try { await change(m) } catch (e) { failed.push(`${m.displayName}（${e.message}）`) }
+  }
+  progress.value = ''
+  selected.value = []
+  await reloadAll()
+  const done = targets.length - failed.length
+  if (!failed.length) Message.success(`${label}完成：${done} 位成员`)
+  else Modal.warning({ title: `${label}：成功 ${done} 位，失败 ${failed.length} 位`, content: '失败的成员：' + failed.join('；') + '。刷新后可重试。' })
+}
+
 async function batch(active) {
   const targets = rows.value.filter(m => selected.value.includes(m.id))
   if (targets.some(m => !canEdit(m))) return Message.warning('所选包含无权管理的成员')
   Modal.confirm({
     title: `批量${active ? '启用' : '停用'} ${targets.length} 位成员`,
     content: active ? '允许成员重新登录。' : '成员的登录会话将立即失效。',
-    onOk: async () => { for (const m of targets) await run(() => patch(`/admin/members/${m.id}`, { active, expectedRevision: m.revision })); selected.value = []; await reloadAll() },
+    onOk: () => eachMember(targets, active ? '批量启用' : '批量停用', m => patch(`/admin/members/${m.id}`, { active, expectedRevision: m.revision })),
   })
 }
 
 async function moveMembers() {
-  try {
-    await run(async () => {
-      for (const m of rows.value.filter(x => selected.value.includes(x.id))) {
-        if (!canEdit(m)) throw Error('无权调整此成员')
-        await api(`/admin/organization/profiles/${m.id}`, { method: 'PUT', body: JSON.stringify({ ...profile(m.id), displayName: m.displayName, departmentId: moveDepartment.value, expectedRevision: m.revision }) })
-      }
-      moveModal.value = false; selected.value = []
-      await reloadAll()
-      Message.success('部门已调整')
-    })
-  } catch {}
+  const targets = rows.value.filter(x => selected.value.includes(x.id))
+  if (targets.some(m => !canEdit(m))) { Message.warning('所选包含无权调整的成员'); return }
+  moveModal.value = false
+  await eachMember(targets, '调整部门', m => api(`/admin/organization/profiles/${m.id}`, { method: 'PUT', body: JSON.stringify({ ...profile(m.id), displayName: m.displayName, departmentId: moveDepartment.value, expectedRevision: m.revision }) }))
 }
 
 function openDepartment(d = null, parent = '') {
@@ -144,7 +156,7 @@ function deleteDepartment() {
 
 <template>
 <section class="organization-layout"><aside class="department-pane"><div class="pane-title"><strong>部门</strong><a-button type="text" size="small" @click="openDepartment()"><template #icon><icon-plus/></template>添加</a-button></div><a-input-search v-model="search" placeholder="搜索人员 / 登录用户名" allow-clear/><div class="department-tree"><a-tree :data="treeData" :selected-keys="[department]" :default-expand-all="true" block-node @select="keys=>{department=keys[0]||'all';selected=[]}"><template #icon><icon-folder/></template></a-tree></div><div v-if="currentDepartment" class="department-actions"><a-button size="small" @click="openDepartment(null,currentDepartment.id)">添加子部门</a-button><a-button size="small" @click="openDepartment(currentDepartment)">编辑</a-button><a-button size="small" status="danger" @click="deleteDepartment">删除</a-button></div><p class="department-footnote">{{organization.departments.length}} 个部门 · 最多 10 层</p></aside>
-<div class="member-pane"><div class="member-heading"><h2>{{department==='all'?organization.name:department==='unassigned'?'未分配部门':currentDepartment?.name}}</h2><span class="muted">成员 {{total}} 人</span><span class="selection-count" v-if="selected.length">已选 {{selected.length}} 人</span></div><div class="table-toolbar"><div class="toolbar-filters"><a-select v-model="statusFilter" style="width:116px"><a-option value="all">全部状态</a-option><a-option value="active">已启用</a-option><a-option value="disabled">已停用</a-option></a-select><a-checkbox v-if="currentDepartment" v-model="recursive">包含子部门</a-checkbox></div><div class="toolbar-actions"><a-dropdown :disabled="!selected.length" @select="key=>key==='move'?moveModal=true:batch(key==='enable')"><a-button :disabled="!selected.length">批量操作 <icon-down/></a-button><template #content><a-doption value="move">调整部门</a-doption><a-doption value="enable">批量启用</a-doption><a-doption value="disable">批量停用</a-doption></template></a-dropdown><a-button type="primary" @click="openMember()"><template #icon><icon-plus/></template>添加成员</a-button></div></div>
+<div class="member-pane"><div class="member-heading"><h2>{{department==='all'?organization.name:department==='unassigned'?'未分配部门':currentDepartment?.name}}</h2><span class="muted">成员 {{total}} 人</span><span class="selection-count" v-if="selected.length">已选 {{selected.length}} 人</span><span class="selection-count" v-if="progress">{{progress}}</span></div><div class="table-toolbar"><div class="toolbar-filters"><a-select v-model="statusFilter" style="width:116px"><a-option value="all">全部状态</a-option><a-option value="active">已启用</a-option><a-option value="disabled">已停用</a-option></a-select><a-checkbox v-if="currentDepartment" v-model="recursive">包含子部门</a-checkbox></div><div class="toolbar-actions"><a-dropdown :disabled="!selected.length" @select="key=>key==='move'?moveModal=true:batch(key==='enable')"><a-button :disabled="!selected.length">批量操作 <icon-down/></a-button><template #content><a-doption value="move">调整部门</a-doption><a-doption value="enable">批量启用</a-doption><a-doption value="disable">批量停用</a-doption></template></a-dropdown><a-button type="primary" @click="openMember()"><template #icon><icon-plus/></template>添加成员</a-button></div></div>
 <a-table :data="rows" :loading="loading" row-key="id" v-model:selected-keys="selected" :row-selection="{type:'checkbox',showCheckedAll:true}" :pagination="{current,pageSize,total,showTotal:true,showPageSize:true}" @page-change="changePage" @page-size-change="changePageSize" :bordered="false" :scroll="{x:840}" size="medium" stripe><template #columns><a-table-column title="姓名" :width="190"><template #cell="{record}"><div class="member-cell"><a-avatar :size="32" :class="record.active?'':'inactive-avatar'">{{record.displayName.slice(0,1)}}</a-avatar><div><strong>{{record.displayName}}</strong><small>{{profile(record.id).jobTitle||'—'}}</small></div><a-tag v-if="record.role==='OWNER'" size="small">所有者</a-tag></div></template></a-table-column><a-table-column title="部门" :width="110"><template #cell="{record}">{{departmentName(profile(record.id).departmentId)}}</template></a-table-column><a-table-column title="登录账号" :width="190"><template #cell="{record}"><div>{{profile(record.id).username||record.email}}</div><small class="muted" v-if="profile(record.id).username">{{record.email}}</small></template></a-table-column><a-table-column title="角色" :width="85"><template #cell="{record}">{{roleLabel(record.role)}}</template></a-table-column><a-table-column title="状态" :width="85"><template #cell="{record}"><span class="status-dot" :class="{disabled:!record.active}"></span>{{record.active?'已启用':'已停用'}}</template></a-table-column><a-table-column title="操作" :width="140" fixed="right"><template #cell="{record}"><a-button type="text" size="small" :disabled="!canEdit(record)" @click="openMember(record)">编辑</a-button><a-dropdown @select="()=>toggle(record)"><a-button type="text" size="small" :disabled="!canEdit(record)">更多<icon-down/></a-button><template #content><a-doption value="toggle">{{record.active?'停用成员':'启用成员'}}</a-doption></template></a-dropdown></template></a-table-column></template><template #empty><a-empty description="暂无符合条件的成员"/></template></a-table>
 </div></section>
 <a-drawer v-model:visible="drawer" :title="editing?'编辑成员':'添加成员'" :width="520" :footer="true" :unmount-on-close="true"><div class="drawer-section-title">基本信息</div><a-form :model="form" layout="vertical"><a-form-item label="姓名" required><a-input v-model="form.displayName" :max-length="64" placeholder="输入成员姓名"/></a-form-item><a-form-item label="主部门"><a-select v-model="form.departmentId" :options="deptOptions" allow-clear placeholder="选择主部门"/></a-form-item><a-form-item label="邮箱" required><a-input v-model="form.email" :disabled="!!editing" placeholder="name@company.com"/></a-form-item><a-form-item label="登录用户名" help="由管理员设置，2–64 位字母、数字、点、下划线或短横线"><a-input v-model="form.username" placeholder="例如 zhangsan"/></a-form-item><div class="drawer-section-title">组织与岗位</div><a-form-item label="组织角色"><a-select v-model="form.role" :disabled="!owner"><a-option value="MEMBER">成员</a-option><a-option value="ADMIN">管理员</a-option></a-select></a-form-item><a-form-item label="工号"><a-input v-model="form.employeeNumber" :max-length="64"/></a-form-item><a-form-item label="职位"><a-input v-model="form.jobTitle" :max-length="64"/></a-form-item></a-form><a-alert v-if="!editing">直接添加后生成一次性临时密码，成员首次登录须修改。当前不发送邀请邮件。</a-alert><template #footer><a-space><a-button @click="drawer=false">取消</a-button><a-button type="primary" :loading="saving" @click="saveMember">保存</a-button></a-space></template></a-drawer>
