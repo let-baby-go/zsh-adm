@@ -18,14 +18,18 @@ spring:
   sql:
     init:
       mode: always
-  # Threads that write streamed gateway answers to callers (Spring MVC async). Spring Boot's default keeps 8
-  # threads and queues the rest, so a 9th concurrent stream got no bytes until another ended. Threads now grow
-  # on demand up to the limit; beyond it new streams are refused at once with 503 gateway_busy.
+  # Virtual threads (Java 21): request handling and response streaming block on upstream model I/O without
+  # holding platform threads, so thousands of slow model calls do not starve the console or each other.
+  # Concurrent model calls are bounded by workdsh.gateway.max-concurrent-requests instead of thread counts.
+  threads:
+    virtual:
+      enabled: ${WORKDSH_VIRTUAL_THREADS:true}
+  # Used only when virtual threads are disabled: grow instead of queueing behind Spring Boot's 8 default threads.
   task:
     execution:
       pool:
         core-size: 8
-        max-size: ${WORKDSH_GATEWAY_MAX_CONCURRENT_STREAMS:256}
+        max-size: ${WORKDSH_GATEWAY_MAX_CONCURRENT_REQUESTS:2000}
         queue-capacity: 0
         keep-alive: 60s
       thread-name-prefix: gateway-stream-
@@ -44,6 +48,8 @@ workdsh:
     # Key → organization and provider configuration are cached; saves in this instance apply at once, changes
     # made through another instance appear within this TTL. 0 reads the database on every call.
     cache-ttl: ${WORKDSH_GATEWAY_CACHE_TTL:10s}
+    # Model calls in progress (streaming or not) across all organizations; more are refused with 503 gateway_busy.
+    max-concurrent-requests: ${WORKDSH_GATEWAY_MAX_CONCURRENT_REQUESTS:2000}
   # Desktop visible text: "database" keeps it in member_desktop_body_records; "s3" stores one object per
   # record in an S3-compatible bucket (AWS S3, MinIO, OSS, COS). migrate-existing moves inline text once.
   body-store:

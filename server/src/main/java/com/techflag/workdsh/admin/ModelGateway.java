@@ -96,8 +96,9 @@ public class ModelGateway {
         if (request.getAttribute(ModelForwarder.PENDING_UPSTREAM) instanceof java.io.InputStream upstream) {
             try { upstream.close(); } catch (java.io.IOException ignored) { }
         }
+        if (request.getAttribute(ModelForwarder.PENDING_PERMIT) instanceof GatewayLimiter.Permit permit) permit.close();
         return error(new GatewayException(HttpStatus.SERVICE_UNAVAILABLE, "gateway_busy",
-                "Too many concurrent model responses; retry shortly"), request);
+                "Too many concurrent model requests; retry shortly"), request);
     }
 
     /**

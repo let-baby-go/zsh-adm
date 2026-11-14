@@ -2,9 +2,9 @@
 # Admin.Dockerfile 仍是候选交付用的“预构建产物”镜像配方；本文件不替代它。
 # 生产环境必须把三个基础镜像都固定为 digest（--build-arg ...=repo@sha256:...）。
 
-ARG JAVA_BUILD_IMAGE=maven:3.9-eclipse-temurin-17
+ARG JAVA_BUILD_IMAGE=maven:3.9-eclipse-temurin-21
 ARG NODE_IMAGE=node:22-alpine
-ARG JAVA_IMAGE=eclipse-temurin:17-jre
+ARG JAVA_IMAGE=eclipse-temurin:21-jre
 
 FROM ${JAVA_BUILD_IMAGE} AS java-build
 WORKDIR /build/server

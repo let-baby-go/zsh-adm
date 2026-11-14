@@ -138,10 +138,10 @@ class GatewayConcurrencyTest {
             "workdsh.bootstrap.admin-email=concurrency-busy@example.test",
             "workdsh.bootstrap.admin-password=ConcurrencyPassword123!",
             "workdsh.secrets.encryption-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-            "spring.task.execution.pool.core-size=1",
-            "spring.task.execution.pool.max-size=2"})
+            "workdsh.gateway.max-concurrent-requests=2"})
     @ActiveProfiles("enterprise-sqlite")
     class AtTheLimit extends Scenario {
+        @Autowired GatewayLimiter limiter;
         String admin() { return "concurrency-busy@example.test"; }
 
         @Test
@@ -156,6 +156,8 @@ class GatewayConcurrencyTest {
                 assertTrue(r.body().contains("gateway_busy"), r.body());
                 assertTrue(r.body().contains("\"type\":\"error\""), "Anthropic callers get Anthropic error format");
             }
+            assertEquals(0, limiter.inUse(), "finished and refused calls give their slots back");
+            assertTrue(openTogether(2).stream().allMatch(r -> r.status() == 200), "freed slots serve new calls");
         }
     }
 }

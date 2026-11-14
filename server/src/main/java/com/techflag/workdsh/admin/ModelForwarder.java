@@ -50,28 +50,44 @@ public class ModelForwarder {
         return thread;
     });
 
-    /** Request attribute holding the open upstream body until a stream thread takes it over. */
+    /** Request attributes holding the open upstream body and the call's permit until the response is written. */
     static final String PENDING_UPSTREAM = ModelForwarder.class.getName() + ".upstream";
+    static final String PENDING_PERMIT = ModelForwarder.class.getName() + ".permit";
 
-    /** Threads that write responses to callers (Spring MVC async); full means a new stream would be refused. */
-    private final org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor streams;
+    private final GatewayLimiter limiter;
 
-    public ModelForwarder(SpringAiModelClient springAi, GatewaySettings settings,
-                          @org.springframework.beans.factory.annotation.Qualifier("applicationTaskExecutor")
-                          org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor streams) {
+    public ModelForwarder(SpringAiModelClient springAi, GatewaySettings settings, GatewayLimiter limiter) {
         this.springAi = springAi;
         this.settings = settings;
-        this.streams = streams;
+        this.limiter = limiter;
         this.client = HttpClient.newBuilder().connectTimeout(settings.connectTimeout())
                 .followRedirects(HttpClient.Redirect.NEVER).build();
     }
 
+    /**
+     * Holds one permit from before the upstream request until the response is written; refuses at once, before
+     * the provider starts generating (and billing) an answer, when every permit is in use.
+     */
     ResponseEntity<StreamingResponseBody> forward(Call call) {
-        // Refuse before the provider starts generating (and billing) an answer nobody can receive.
-        if (streams.getActiveCount() >= streams.getMaxPoolSize()) {
-            throw failed(call, new GatewayException(HttpStatus.SERVICE_UNAVAILABLE, "gateway_busy", "Too many concurrent model responses; retry shortly"));
+        var permit = limiter.tryAcquire();
+        if (permit == null) {
+            throw failed(call, new GatewayException(HttpStatus.SERVICE_UNAVAILABLE, "gateway_busy", "Too many concurrent model requests; retry shortly"));
         }
-        if (call.anthropic() && !call.streaming()) return anthropicViaSpringAi(call);
+        remember(PENDING_PERMIT, permit);
+        try {
+            return call.anthropic() && !call.streaming() ? anthropicViaSpringAi(call, permit) : relayed(call, permit);
+        } catch (RuntimeException e) {
+            permit.close();
+            throw e;
+        }
+    }
+
+    private static void remember(String name, Object value) {
+        var attributes = org.springframework.web.context.request.RequestContextHolder.getRequestAttributes();
+        if (attributes != null) attributes.setAttribute(name, value, org.springframework.web.context.request.RequestAttributes.SCOPE_REQUEST);
+    }
+
+    private ResponseEntity<StreamingResponseBody> relayed(Call call, GatewayLimiter.Permit permit) {
         var target = call.anthropic() ? UpstreamEndpoint.anthropic(call.connection().baseUrl()) : UpstreamEndpoint.openAi(call.connection().baseUrl());
         var request = HttpRequest.newBuilder(target.uri()).timeout(settings.responseTimeout()).header("Content-Type", "application/json");
         if (call.anthropic()) request.header("x-api-key", call.connection().apiKey()).header("anthropic-version", call.version());
@@ -94,14 +110,13 @@ public class ModelForwarder {
         }
         String contentType = reply.headers().firstValue("Content-Type").orElse(call.streaming() ? "text/event-stream" : "application/json");
         // X-Accel-Buffering: nginx (and compatible proxies) relay each chunk immediately even without proxy_buffering off.
-        // If no stream thread is free after all, ModelGateway closes this body, which cancels the upstream request.
-        var attributes = org.springframework.web.context.request.RequestContextHolder.getRequestAttributes();
-        if (attributes != null) attributes.setAttribute(PENDING_UPSTREAM, reply.body(), org.springframework.web.context.request.RequestAttributes.SCOPE_REQUEST);
+        // If the response is never written (no thread for it), ModelGateway closes this body and the permit.
+        remember(PENDING_UPSTREAM, reply.body());
         return ResponseEntity.ok().header("Cache-Control", "no-store").header("X-Accel-Buffering", "no")
-                .header("Content-Type", contentType).body(relay(call, reply.body()));
+                .header("Content-Type", contentType).body(relay(call, reply.body(), permit));
     }
 
-    private ResponseEntity<StreamingResponseBody> anthropicViaSpringAi(Call call) {
+    private ResponseEntity<StreamingResponseBody> anthropicViaSpringAi(Call call, GatewayLimiter.Permit permit) {
         byte[] result;
         try {
             result = springAi.completeMessages(call.connection().baseUrl(), call.connection().apiKey(), call.version(), call.body());
@@ -117,7 +132,8 @@ public class ModelForwarder {
             throw failed(call, new GatewayException(HttpStatus.BAD_GATEWAY, "upstream_error", "Model provider response could not be read"));
         }
         logOutcome(call, 200, "completed", result.length);
-        return ResponseEntity.ok().header("Cache-Control", "no-store").header("Content-Type", "application/json").body(out -> out.write(result));
+        return ResponseEntity.ok().header("Cache-Control", "no-store").header("Content-Type", "application/json")
+                .body(out -> { try (permit) { out.write(result); } });
     }
 
     /** Classifies a non-2xx provider answer. The supplier key never reaches the caller, even if echoed. */
@@ -141,7 +157,7 @@ public class ModelForwarder {
      * happens when the caller disconnects, when the upstream stays silent longer than stream-idle-timeout, and
      * when the copy ends normally.
      */
-    private StreamingResponseBody relay(Call call, InputStream upstream) {
+    private StreamingResponseBody relay(Call call, InputStream upstream, GatewayLimiter.Permit permit) {
         return out -> {
             long idleNanos = settings.streamIdleTimeout().toNanos();
             long period = Math.max(50, Math.min(1000, settings.streamIdleTimeout().toMillis() / 4));
@@ -166,6 +182,7 @@ public class ModelForwarder {
                 }
             } finally {
                 guard.cancel(false);
+                permit.close();
                 logOutcome(call, 200, outcome, bytes);
             }
         };

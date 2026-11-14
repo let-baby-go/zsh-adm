@@ -65,7 +65,7 @@ if __name__ == '__main__':
     parser.add_argument('--release-root', type=pathlib.Path)
     parser.add_argument('--log', type=pathlib.Path, default=pathlib.Path(tempfile.gettempdir())/'workdsh-admin-packaged-smoke.log')
     args = parser.parse_args()
-    if not args.java: raise ValueError('Java 17+ is required')
+    if not args.java: raise ValueError('Java 21+ is required')
     base = args.release_root.resolve() if args.release_root else ROOT
     jar = base/'server/workdsh-admin-server.jar' if args.release_root else base/'server/target/workdsh-admin-server-0.1.0-SNAPSHOT.jar'
     print(json.dumps(smoke(args.java, jar, base/'web/dist', args.log)))

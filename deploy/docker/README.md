@@ -53,8 +53,8 @@ docker compose -f docker-compose.yml -f docker-compose.postgres.yml up --build -
 
 | 资源 | 默认 | 配置 | 说明 |
 | --- | --- | --- | --- |
-| 同时进行的模型响应 | 256 | `WORKDSH_GATEWAY_MAX_CONCURRENT_STREAMS` | 每个进行中的响应（含流式）占一个线程，按需增加、空闲 60 秒回收。达到上限时新请求立即收到 503 `gateway_busy`，不会排队，也不会向供应商发出请求。上限按「同时在等模型回答的成员数」估算，每个线程约占 1 MB 栈内存 |
-| 请求处理线程（Tomcat） | 200 | Spring Boot 默认 | 处理普通请求，以及模型请求在上游开始响应前的等待 |
+| 线程模型 | 虚拟线程 | `WORKDSH_VIRTUAL_THREADS` | 需 Java 21。请求处理与流式输出都在虚拟线程上，等待上游模型时不占用平台线程，大量慢速模型调用不会挤占管理后台和其他接口。只在排查问题时临时关闭；关闭后退回平台线程池，并发能力明显下降 |
+| 同时进行的模型调用 | 2000 | `WORKDSH_GATEWAY_MAX_CONCURRENT_REQUESTS` | 流式与非流式合计、全部组织共享。从发出上游请求到响应写完占一个名额。达到上限时新请求立即收到 503 `gateway_busy`，不排队，也不向供应商发请求。估算：同时在跑的成员 × 每人并发 agent 数，留出余量；注意进程文件句柄上限（每个调用约占 2 个连接，建议 `ulimit -n` ≥ 上限 × 3） |
 | 网关配置缓存 | 10 秒 | `WORKDSH_GATEWAY_CACHE_TTL` | 内部 Key→组织、模型接口配置缓存在内存，转发不再查库；供应商 Key 仍以密文缓存、每次调用时解密。在本实例保存配置或更换内部 Key 立即生效；多实例部署时，其他实例最长在该时长后生效（更换内部 Key 后，旧 Key 在其他实例上最多还能用这么久）。设为 0 则每次查库 |
 | 数据库连接 | 10 | `WORKDSH_DB_POOL_SIZE` | 只在单条查询期间占用，模型转发和流式输出不占连接；一般无需调大。PostgreSQL/MySQL 需确认数据库端 `max_connections` 足够容纳所有实例的连接 |
 | 获取连接超时 | 30 秒 | `WORKDSH_DB_CONNECTION_TIMEOUT_MS` | 连接被占满时请求最多等待这么久，超时报错 |

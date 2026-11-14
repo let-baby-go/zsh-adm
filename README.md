@@ -27,7 +27,7 @@ Desktop 使用同一个基础安装包，企业账号和协作插件由用户显
 
 ## 本地开发
 
-需要 Java 17+、Maven 3.9+、Node 22.19+ 或 24+。首次启动通过受控环境设置 `WORKDSH_BOOTSTRAP_ADMIN_EMAIL` 和至少 12 位的 `WORKDSH_BOOTSTRAP_ADMIN_PASSWORD`。不要把实际凭据写入命令历史、日志或源码。
+需要 Java 21+、Maven 3.9+、Node 22.19+ 或 24+。首次启动通过受控环境设置 `WORKDSH_BOOTSTRAP_ADMIN_EMAIL` 和至少 12 位的 `WORKDSH_BOOTSTRAP_ADMIN_PASSWORD`。不要把实际凭据写入命令历史、日志或源码。
 
 ```sh
 mvn -f server/pom.xml spring-boot:run
