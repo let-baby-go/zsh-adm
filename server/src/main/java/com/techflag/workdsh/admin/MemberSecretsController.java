@@ -1,25 +1,18 @@
 package com.techflag.workdsh.admin;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.CacheControl;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
-import org.springframework.web.server.ResponseStatusException;
 /** DSH server-to-server adapter only; caller cannot select a different member. */
 @RestController
 @RequestMapping("/api/internal/member-secrets")
 public class MemberSecretsController {
- private final MemberSecrets secrets;private final String serviceKey;
- public MemberSecretsController(MemberSecrets secrets,@Value("${workdsh.secrets.service-key:}")String serviceKey){this.secrets=secrets;this.serviceKey=serviceKey;}
- private void server(String supplied){
-  if(serviceKey.length()<32||supplied==null||!MessageDigest.isEqual(serviceKey.getBytes(StandardCharsets.UTF_8),supplied.getBytes(StandardCharsets.UTF_8)))
-   throw new ResponseStatusException(HttpStatus.FORBIDDEN);
- }
+ private final MemberSecrets secrets;private final ServiceKeyGuard guard;
+ public MemberSecretsController(MemberSecrets secrets,ServiceKeyGuard guard){this.secrets=secrets;this.guard=guard;}
+ private void server(String supplied){guard.require(supplied);}
  public record Secret(@NotBlank @Size(max=8192)String value){}
  @GetMapping("/references/{ref}")
  public ResponseEntity<Secret> read(@RequestHeader(value="X-WorkDSH-Service-Key",required=false)String key,@RequestHeader(value="Authorization",required=false)String bearer,@PathVariable String ref){

@@ -16,10 +16,17 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
-/** Adds the browser's HttpOnly session to existing API auth without exposing it to JavaScript. */
+/**
+ * Adds the browser's HttpOnly session to the management console's API auth without exposing it to JavaScript.
+ * Only console routes (/api/admin/, /api/auth/) accept the cookie; member, collaboration, internal and model
+ * gateway routes require an explicit Authorization header, so a browser session can never act as a Desktop
+ * member or a server. Any /api/ request that carries the cookie must be same-site, and writes must come from
+ * the configured console origin.
+ */
 @Component
 public class BrowserSessionFilter extends OncePerRequestFilter {
     public static final String COOKIE_NAME = "workdsh-admin-session";
+    static final java.util.List<String> CONSOLE_PREFIXES = java.util.List.of("/api/admin/", "/api/auth/");
     private final String webOrigin;
 
     public BrowserSessionFilter(@Value("${workdsh.web.origin:http://127.0.0.1:18891}") String webOrigin) {
@@ -45,7 +52,8 @@ public class BrowserSessionFilter extends OncePerRequestFilter {
                 response.sendError(403); return;
             }
         }
-        if (token == null || request.getHeader("Authorization") != null) {
+        boolean console = CONSOLE_PREFIXES.stream().anyMatch(path::startsWith);
+        if (token == null || !console || request.getHeader("Authorization") != null) {
             chain.doFilter(request, response);
             return;
         }

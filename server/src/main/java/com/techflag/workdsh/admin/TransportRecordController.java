@@ -1,11 +1,8 @@
 package com.techflag.workdsh.admin;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Min;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.*;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.annotation.Transactional;
@@ -17,11 +14,9 @@ import org.springframework.web.server.ResponseStatusException;
 @RequestMapping("/api/internal/transport-record")
 public class TransportRecordController {
  private static final String KEY="client-connection/browser-session";
- private final JdbcTemplate db;private final MemberSecrets cipher;private final ObjectMapper json;private final String serviceKey;private final DatabaseDialect dialect;
- public TransportRecordController(JdbcTemplate db,MemberSecrets cipher,ObjectMapper json,DatabaseDialect dialect,@Value("${workdsh.secrets.service-key:}")String serviceKey){this.db=db;this.cipher=cipher;this.json=json;this.dialect=dialect;this.serviceKey=serviceKey;}
- private void server(String supplied){
-  if(serviceKey.length()<32||supplied==null||!MessageDigest.isEqual(serviceKey.getBytes(StandardCharsets.UTF_8),supplied.getBytes(StandardCharsets.UTF_8)))throw new ResponseStatusException(HttpStatus.FORBIDDEN);
- }
+ private final JdbcTemplate db;private final MemberSecrets cipher;private final ObjectMapper json;private final ServiceKeyGuard guard;private final DatabaseDialect dialect;
+ public TransportRecordController(JdbcTemplate db,MemberSecrets cipher,ObjectMapper json,DatabaseDialect dialect,ServiceKeyGuard guard){this.db=db;this.cipher=cipher;this.json=json;this.dialect=dialect;this.guard=guard;}
+ private void server(String supplied){guard.require(supplied);}
  public record Stored(long revision,JsonNode record){}
  public record Update(@Min(0)long revision,JsonNode record){}
  private Stored stored(){

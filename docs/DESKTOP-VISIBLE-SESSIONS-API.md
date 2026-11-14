@@ -65,11 +65,13 @@
 - 单个完整快照最多 512 条记录。
 - 每条 text UTF-8 最多 64 KiB，快照 text UTF-8 合计最多 256 KiB。
 
-超过限制返回 413，绝不截断正文；客户端必须保留本地内容并显示同步失败。空 entries、字段/ID/序列/文本错误、已识别凭据返回 400；无效登录 401，首次改密未完成 403，非 JSON 内容类型 415。
+超过限制返回 413，绝不截断正文；客户端必须保留本地内容并显示同步失败。
+
+运维说明：每次提交都携带该会话的全部记录，所以限制作用于整个会话的累计内容。一个会话累计超过 512 条记录或 256 KiB 正文后，之后的每次提交都会返回 413，后台停留在最后一次成功提交的内容，管理员只能看到这部分。这是预期行为而不是故障：Desktop 应在会话接近上限时提示成员新开会话；管理员看到某会话消息数停止增长、而成员仍在使用时，可据此判断。调整上限需同时修改后台常量（`DesktopVisibleSessions.MAX_*`）与反向代理的 `client_max_body_size`，并评估单次提交的数据库写入量。空 entries、字段/ID/序列/文本错误、已识别凭据返回 400；无效登录 401，首次改密未完成 403，非 JSON 内容类型 415。
 
 ## 存储与管理员只读审计
 
-独立表 `member_desktop_body_sessions`、`member_desktop_body_records`、`member_desktop_body_receipts` 保存归属/状态、追加正文和幂等回执。当前 schema 与 PostgreSQL V007 新开发迁移均包含这三表。不能对现运行旧数据库直接重跑新库 schema。
+独立表 `member_desktop_body_sessions`、`member_desktop_body_records`、`member_desktop_body_receipts` 保存归属/状态、追加正文和幂等回执（PostgreSQL V007 建表，V009 增加最近上报时间、正文 SHA-256 与对象键）。正文默认存在 `body_text`；设置 `WORKDSH_BODY_STORE=s3` 后存入 S3 兼容对象存储，行内只保留 SHA-256 与对象键，前缀不可变校验按 SHA-256 比对。组织在「企业设置」配置保留天数后，最近上报早于该天数的会话每日被擦除正文、保留墓碑，之后的提交同样返回 410。不能对现运行旧数据库直接重跑新库 schema。
 
 现有组织管理员 `GET /api/admin/sessions` 列出未删除 Desktop 正文与正式 Web 会话；正文 ID 带 `desktop-body:` 前缀。`GET /api/admin/sessions/{memberId}/{serverSessionId}` 按当前管理权限及组织范围只读返回 text content，沿用分页和 `session.content.viewed` 审计。显示的正文时间为后台接收时间。普通成员和其他组织管理员不能读取；墓碑不再出现在管理列表/正文详情。
 
